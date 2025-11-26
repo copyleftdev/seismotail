@@ -13,6 +13,7 @@ use tracing::error;
 mod cli;
 mod client;
 mod dedup;
+mod eew;
 mod errors;
 mod filters;
 mod models;
@@ -46,6 +47,7 @@ fn run() -> Result<()> {
         Command::Live(args) => cmd_live(args),
         Command::Query(args) => cmd_query(args),
         Command::Ui(args) => cmd_ui(args),
+        Command::Detect(args) => cmd_detect(args),
     }
 }
 
@@ -253,4 +255,106 @@ fn cmd_ui(args: cli::UiArgs) -> Result<()> {
     tokio::runtime::Runtime::new()
         .context("failed to create tokio runtime")?
         .block_on(server::run_server(config))
+}
+
+/// Run the EEW detection demo.
+fn cmd_detect(args: cli::DetectArgs) -> Result<()> {
+    use crate::eew::{AccelerometerRecord, AlertLevel, StaLtaDetector};
+
+    println!("\x1b[1m🚨 SeismoTail EEW Detection Demo\x1b[0m");
+    println!("\x1b[2m───────────────────────────────────────\x1b[0m");
+    println!("  Algorithm: STA/LTA (Short-Term/Long-Term Average)");
+    println!("  Threshold: {}", args.threshold);
+    println!("\x1b[2m───────────────────────────────────────\x1b[0m\n");
+
+    if args.demo {
+        // Demo mode: simulate earthquake detection
+        println!("\x1b[93m▶ Running detection on simulated data...\x1b[0m\n");
+
+        // Create detector with custom threshold
+        let detector = StaLtaDetector::default();
+
+        // Simulate quiet background noise (0.1 gal)
+        let mut x: Vec<f32> = vec![0.1; 150];
+        let mut y: Vec<f32> = vec![0.1; 150];
+        let mut z: Vec<f32> = vec![0.1; 150];
+
+        // Add P-wave arrival (sudden spike to 15 gals)
+        println!("  Simulating P-wave arrival at sample 150...");
+        x.extend(vec![15.0, 18.0, 22.0, 25.0, 20.0, 15.0, 10.0, 8.0, 5.0, 3.0]);
+        y.extend(vec![12.0, 15.0, 18.0, 20.0, 16.0, 12.0, 8.0, 6.0, 4.0, 2.0]);
+        z.extend(vec![5.0, 8.0, 10.0, 12.0, 10.0, 8.0, 5.0, 3.0, 2.0, 1.0]);
+
+        // Add more noise after
+        x.extend(vec![0.2; 40]);
+        y.extend(vec![0.2; 40]);
+        z.extend(vec![0.2; 40]);
+
+        let record = AccelerometerRecord {
+            device_id: "demo-sensor-001".to_string(),
+            timestamp: chrono::Utc::now().timestamp() as f64,
+            x,
+            y,
+            z,
+            sr: 31.25,
+        };
+
+        let detections = detector.detect(&record);
+
+        if detections.is_empty() {
+            println!("\n  \x1b[92m✓ No earthquakes detected in quiet data\x1b[0m");
+        } else {
+            for det in &detections {
+                let alert_color = match det.alert_level {
+                    AlertLevel::Severe => "\x1b[95m",   // Magenta
+                    AlertLevel::Strong => "\x1b[91m",   // Red
+                    AlertLevel::Moderate => "\x1b[93m", // Yellow
+                    AlertLevel::Light => "\x1b[92m",    // Green
+                    _ => "\x1b[0m",
+                };
+
+                println!("\n  \x1b[1m{} EARTHQUAKE DETECTED!\x1b[0m", det.alert_level.emoji());
+                println!("  ├─ Device:    {}", det.device_id);
+                println!("  ├─ PGA:       {:.2} gals (cm/s²)", det.pga);
+                println!("  ├─ STA/LTA:   {:.2}", det.sta_lta_ratio);
+                println!("  ├─ Alert:     {}{}\x1b[0m", alert_color, det.alert_level.as_str().to_uppercase());
+                if let Some(mag) = det.estimated_magnitude {
+                    println!("  └─ Est. Mag:  ~M{:.1}", mag);
+                }
+            }
+        }
+
+        println!("\n\x1b[2m───────────────────────────────────────\x1b[0m");
+        println!("\x1b[1mPGA Reference Scale:\x1b[0m");
+        println!("  ⚪ < 1 gal    │ Not felt");
+        println!("  🟢 1-3 gals   │ Weak");
+        println!("  🟡 3-10 gals  │ Light");
+        println!("  🟠 10-50 gals │ Moderate (potential damage)");
+        println!("  🔴 50-150 gals│ Strong (likely damage)");
+        println!("  🟣 > 150 gals │ Severe (major damage)");
+        println!("\x1b[2m───────────────────────────────────────\x1b[0m\n");
+
+        println!("\x1b[92m✓ Demo complete!\x1b[0m");
+        println!("\n\x1b[2mTo analyze real OpenEEW data:\x1b[0m");
+        println!("  seismotail detect --country mx --date 2018-02-16");
+        println!("\n\x1b[2mData from: https://registry.opendata.aws/grillo-openeew/\x1b[0m");
+
+    } else {
+        // Real data mode
+        println!("\x1b[93m▶ OpenEEW Data Access\x1b[0m\n");
+        println!("  Country: {}", args.country);
+        
+        if let Some(date) = &args.date {
+            println!("  Date: {}", date);
+            println!("\n  \x1b[2mData URL pattern:\x1b[0m");
+            println!("  s3://grillo-openeew/records/country_code={}/year={}/month={}/day={}/",
+                args.country, &date[0..4], &date[5..7], &date[8..10]);
+        }
+        
+        println!("\n\x1b[93m⚠ Real-time data requires AWS S3 access.\x1b[0m");
+        println!("  Use --demo flag to see detection in action:");
+        println!("  \x1b[96mseismotail detect --demo\x1b[0m");
+    }
+
+    Ok(())
 }

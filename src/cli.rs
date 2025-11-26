@@ -41,6 +41,9 @@ pub enum Command {
 
     /// Start the web UI server
     Ui(UiArgs),
+
+    /// Run EEW detection demo on OpenEEW data
+    Detect(DetectArgs),
 }
 
 /// Arguments for the `tail` command.
@@ -169,6 +172,26 @@ pub struct UiArgs {
     /// Open browser automatically
     #[arg(long)]
     pub open: bool,
+}
+
+/// Arguments for the `detect` command (EEW demo).
+#[derive(Parser, Debug)]
+pub struct DetectArgs {
+    /// Country code for OpenEEW data (mx or cl)
+    #[arg(long, default_value = "mx")]
+    pub country: String,
+
+    /// Date to analyze (YYYY-MM-DD)
+    #[arg(long)]
+    pub date: Option<String>,
+
+    /// Demo mode: simulate detection on sample earthquake data
+    #[arg(long)]
+    pub demo: bool,
+
+    /// STA/LTA trigger threshold (default: 3.0)
+    #[arg(long, default_value = "3.0")]
+    pub threshold: f32,
 }
 
 /// Parse a feed type from string.
