@@ -177,7 +177,7 @@ pub struct UiArgs {
 /// Arguments for the `detect` command (EEW demo).
 #[derive(Parser, Debug)]
 pub struct DetectArgs {
-    /// Country code for OpenEEW data (mx or cl)
+    /// Country code for OpenEEW data (mx, cl, cr, nz, pr)
     #[arg(long, default_value = "mx")]
     pub country: String,
 
@@ -185,9 +185,13 @@ pub struct DetectArgs {
     #[arg(long)]
     pub date: Option<String>,
 
-    /// Demo mode: simulate detection on sample earthquake data
+    /// Hour to analyze (00-23). If not specified, analyzes first available.
     #[arg(long)]
-    pub demo: bool,
+    pub hour: Option<String>,
+
+    /// Run detection on synthetic/simulated earthquake waveform
+    #[arg(long)]
+    pub simulate: bool,
 
     /// STA/LTA trigger threshold (default: 3.0)
     #[arg(long, default_value = "3.0")]

@@ -124,10 +124,10 @@ pub struct StaLtaDetector {
 impl Default for StaLtaDetector {
     fn default() -> Self {
         Self {
-            sta_samples: 10,       // ~0.3 seconds at 31.25 Hz
-            lta_samples: 100,      // ~3 seconds at 31.25 Hz
-            trigger_threshold: 3.0,
-            detrigger_threshold: 1.5,
+            sta_samples: 5,        // ~0.16 seconds at 31.25 Hz
+            lta_samples: 25,       // ~0.8 seconds at 31.25 Hz (fits in 32-sample records)
+            trigger_threshold: 2.0, // Lower threshold for better sensitivity
+            detrigger_threshold: 1.0,
         }
     }
 }
@@ -144,9 +144,11 @@ impl StaLtaDetector {
     }
 
     /// Calculate the vector magnitude (PGA) from x, y, z components.
+    /// Converts from g (gravity) to gals (cm/s²): 1g = 980 gals
     #[inline]
     pub fn calculate_pga(x: f32, y: f32, z: f32) -> f32 {
-        (x * x + y * y + z * z).sqrt()
+        const G_TO_GALS: f32 = 980.0;
+        (x * x + y * y + z * z).sqrt() * G_TO_GALS
     }
 
     /// Run detection on accelerometer data.
@@ -246,18 +248,148 @@ impl Country {
     }
 }
 
-/// Build the S3 URL for OpenEEW data.
-pub fn build_s3_url(country: Country, date: &str, hour: &str) -> String {
-    // Format: s3://grillo-openeew/records/country_code=mx/year=2018/month=02/day=16/hour=23/
-    format!(
-        "https://{}.s3.amazonaws.com/records/country_code={}/year={}/month={}/day={}/hour={}/",
-        OPENEEW_BUCKET,
-        country.code(),
+/// Build the S3 prefix for OpenEEW data.
+/// Structure: records/country_code=mx/device_id=000/year=2018/month=02/day=16/hour=00/
+pub fn build_s3_prefix(country: &str, device_id: &str, date: &str, hour: Option<&str>) -> String {
+    let base = format!(
+        "records/country_code={}/device_id={}/year={}/month={}/day={}",
+        country,
+        device_id,
         &date[0..4],   // year
         &date[5..7],   // month
         &date[8..10],  // day
-        hour
-    )
+    );
+    
+    if let Some(h) = hour {
+        format!("{}/hour={}/", base, h)
+    } else {
+        format!("{}/", base)
+    }
+}
+
+/// OpenEEW S3 data client.
+pub struct OpenEewClient {
+    s3_client: aws_sdk_s3::Client,
+}
+
+impl OpenEewClient {
+    /// Create a new client (requires tokio runtime).
+    pub async fn new() -> Self {
+        // Use anonymous credentials for public bucket access
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new("us-east-1"))
+            .no_credentials()
+            .load()
+            .await;
+        
+        let s3_client = aws_sdk_s3::Client::new(&config);
+        Self { s3_client }
+    }
+
+    /// List available device IDs for a country.
+    pub async fn list_devices(&self, country: &str) -> Result<Vec<String>, aws_sdk_s3::Error> {
+        let prefix = format!("records/country_code={}/device_id=", country);
+        
+        let resp = self.s3_client
+            .list_objects_v2()
+            .bucket(OPENEEW_BUCKET)
+            .prefix(&prefix)
+            .delimiter("/")
+            .send()
+            .await?;
+        
+        let devices: Vec<String> = resp
+            .common_prefixes()
+            .iter()
+            .filter_map(|p| p.prefix())
+            .filter_map(|p| {
+                // Extract device ID from path like "records/country_code=mx/device_id=000/"
+                p.split("device_id=").nth(1).map(|s| s.trim_end_matches('/').to_string())
+            })
+            .collect();
+        
+        Ok(devices)
+    }
+
+    /// List available files for a given device and date.
+    pub async fn list_files(&self, country: &str, device_id: &str, date: &str, hour: Option<&str>) -> Result<Vec<String>, aws_sdk_s3::Error> {
+        let prefix = build_s3_prefix(country, device_id, date, hour);
+        
+        let resp = self.s3_client
+            .list_objects_v2()
+            .bucket(OPENEEW_BUCKET)
+            .prefix(&prefix)
+            .send()
+            .await?;
+        
+        let files: Vec<String> = resp
+            .contents()
+            .iter()
+            .filter_map(|obj| obj.key().map(String::from))
+            .filter(|k| k.ends_with(".jsonl") || k.ends_with(".json"))
+            .collect();
+        
+        Ok(files)
+    }
+
+    /// Fetch and parse accelerometer records from a file.
+    pub async fn fetch_records(&self, key: &str) -> Result<Vec<AccelerometerRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self.s3_client
+            .get_object()
+            .bucket(OPENEEW_BUCKET)
+            .key(key)
+            .send()
+            .await?;
+        
+        let body = resp.body.collect().await?;
+        let bytes = body.into_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        
+        let mut records = Vec::new();
+        
+        // Parse JSONL (one JSON object per line)
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(record) = serde_json::from_str::<AccelerometerRecord>(line) {
+                records.push(record);
+            }
+        }
+        
+        Ok(records)
+    }
+
+    /// Fetch records for a date across all devices and run detection.
+    pub async fn analyze_date(
+        &self,
+        country: &str,
+        date: &str,
+        detector: &StaLtaDetector,
+        max_devices: Option<usize>,
+        files_per_device: Option<usize>,
+    ) -> Result<Vec<Detection>, Box<dyn std::error::Error + Send + Sync>> {
+        let devices = self.list_devices(country).await?;
+        let device_limit = max_devices.unwrap_or(3).min(devices.len());
+        
+        let mut all_detections = Vec::new();
+        
+        for device_id in devices.iter().take(device_limit) {
+            let files = self.list_files(country, device_id, date, None).await?;
+            let file_limit = files_per_device.unwrap_or(2).min(files.len());
+            
+            for key in files.iter().take(file_limit) {
+                let records = self.fetch_records(key).await?;
+                
+                for record in &records {
+                    let detections = detector.detect(record);
+                    all_detections.extend(detections);
+                }
+            }
+        }
+        
+        Ok(all_detections)
+    }
 }
 
 // ============================================================================

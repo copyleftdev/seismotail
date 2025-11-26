@@ -259,61 +259,30 @@ fn cmd_ui(args: cli::UiArgs) -> Result<()> {
 
 /// Run the EEW detection demo.
 fn cmd_detect(args: cli::DetectArgs) -> Result<()> {
-    use crate::eew::{AccelerometerRecord, AlertLevel, StaLtaDetector};
+    use crate::eew::{AccelerometerRecord, AlertLevel, Detection, OpenEewClient, StaLtaDetector};
 
-    println!("\x1b[1m🚨 SeismoTail EEW Detection Demo\x1b[0m");
+    println!("\x1b[1m🚨 SeismoTail EEW Detection\x1b[0m");
     println!("\x1b[2m───────────────────────────────────────\x1b[0m");
     println!("  Algorithm: STA/LTA (Short-Term/Long-Term Average)");
     println!("  Threshold: {}", args.threshold);
     println!("\x1b[2m───────────────────────────────────────\x1b[0m\n");
 
-    if args.demo {
-        // Demo mode: simulate earthquake detection
-        println!("\x1b[93m▶ Running detection on simulated data...\x1b[0m\n");
-
-        // Create detector with custom threshold
-        let detector = StaLtaDetector::default();
-
-        // Simulate quiet background noise (0.1 gal)
-        let mut x: Vec<f32> = vec![0.1; 150];
-        let mut y: Vec<f32> = vec![0.1; 150];
-        let mut z: Vec<f32> = vec![0.1; 150];
-
-        // Add P-wave arrival (sudden spike to 15 gals)
-        println!("  Simulating P-wave arrival at sample 150...");
-        x.extend(vec![15.0, 18.0, 22.0, 25.0, 20.0, 15.0, 10.0, 8.0, 5.0, 3.0]);
-        y.extend(vec![12.0, 15.0, 18.0, 20.0, 16.0, 12.0, 8.0, 6.0, 4.0, 2.0]);
-        z.extend(vec![5.0, 8.0, 10.0, 12.0, 10.0, 8.0, 5.0, 3.0, 2.0, 1.0]);
-
-        // Add more noise after
-        x.extend(vec![0.2; 40]);
-        y.extend(vec![0.2; 40]);
-        z.extend(vec![0.2; 40]);
-
-        let record = AccelerometerRecord {
-            device_id: "demo-sensor-001".to_string(),
-            timestamp: chrono::Utc::now().timestamp() as f64,
-            x,
-            y,
-            z,
-            sr: 31.25,
-        };
-
-        let detections = detector.detect(&record);
-
+    // Helper to print detections
+    fn print_detections(detections: &[Detection]) {
         if detections.is_empty() {
-            println!("\n  \x1b[92m✓ No earthquakes detected in quiet data\x1b[0m");
+            println!("  \x1b[92m✓ No significant seismic activity detected\x1b[0m");
         } else {
-            for det in &detections {
+            println!("  \x1b[93mFound {} detection(s):\x1b[0m\n", detections.len());
+            for det in detections {
                 let alert_color = match det.alert_level {
-                    AlertLevel::Severe => "\x1b[95m",   // Magenta
-                    AlertLevel::Strong => "\x1b[91m",   // Red
-                    AlertLevel::Moderate => "\x1b[93m", // Yellow
-                    AlertLevel::Light => "\x1b[92m",    // Green
+                    AlertLevel::Severe => "\x1b[95m",
+                    AlertLevel::Strong => "\x1b[91m",
+                    AlertLevel::Moderate => "\x1b[93m",
+                    AlertLevel::Light => "\x1b[92m",
                     _ => "\x1b[0m",
                 };
 
-                println!("\n  \x1b[1m{} EARTHQUAKE DETECTED!\x1b[0m", det.alert_level.emoji());
+                println!("  \x1b[1m{} EARTHQUAKE DETECTED!\x1b[0m", det.alert_level.emoji());
                 println!("  ├─ Device:    {}", det.device_id);
                 println!("  ├─ PGA:       {:.2} gals (cm/s²)", det.pga);
                 println!("  ├─ STA/LTA:   {:.2}", det.sta_lta_ratio);
@@ -321,10 +290,44 @@ fn cmd_detect(args: cli::DetectArgs) -> Result<()> {
                 if let Some(mag) = det.estimated_magnitude {
                     println!("  └─ Est. Mag:  ~M{:.1}", mag);
                 }
+                println!();
             }
         }
+    }
 
-        println!("\n\x1b[2m───────────────────────────────────────\x1b[0m");
+    if args.simulate {
+        // Simulate earthquake detection with synthetic waveform
+        println!("\x1b[93m▶ Running detection on synthetic waveform...\x1b[0m\n");
+
+        let detector = StaLtaDetector::default();
+
+        // Simulate quiet background noise (~0.001g = ~1 gal)
+        // OpenEEW data is in g (gravity units)
+        let mut x: Vec<f32> = vec![0.001; 30];
+        let mut y: Vec<f32> = vec![0.001; 30];
+        let mut z: Vec<f32> = vec![0.001; 30];
+
+        // Add P-wave arrival (sudden spike - 0.05g = ~50 gals for moderate quake)
+        println!("  Simulating P-wave arrival...\n");
+        x.extend(vec![0.02, 0.04, 0.08, 0.15, 0.25, 0.35, 0.30, 0.20, 0.10, 0.05]);
+        y.extend(vec![0.01, 0.03, 0.06, 0.12, 0.20, 0.28, 0.24, 0.16, 0.08, 0.04]);
+        z.extend(vec![0.01, 0.02, 0.04, 0.08, 0.12, 0.15, 0.12, 0.08, 0.05, 0.02]);
+        // Decay back to quiet
+        x.extend(vec![0.002; 10]);
+        y.extend(vec![0.002; 10]);
+        z.extend(vec![0.002; 10]);
+
+        let record = AccelerometerRecord {
+            device_id: "demo-sensor-001".to_string(),
+            timestamp: chrono::Utc::now().timestamp() as f64,
+            x, y, z,
+            sr: 31.25,
+        };
+
+        let detections = detector.detect(&record);
+        print_detections(&detections);
+
+        println!("\x1b[2m───────────────────────────────────────\x1b[0m");
         println!("\x1b[1mPGA Reference Scale:\x1b[0m");
         println!("  ⚪ < 1 gal    │ Not felt");
         println!("  🟢 1-3 gals   │ Weak");
@@ -334,26 +337,109 @@ fn cmd_detect(args: cli::DetectArgs) -> Result<()> {
         println!("  🟣 > 150 gals │ Severe (major damage)");
         println!("\x1b[2m───────────────────────────────────────\x1b[0m\n");
 
-        println!("\x1b[92m✓ Demo complete!\x1b[0m");
-        println!("\n\x1b[2mTo analyze real OpenEEW data:\x1b[0m");
-        println!("  seismotail detect --country mx --date 2018-02-16");
-        println!("\n\x1b[2mData from: https://registry.opendata.aws/grillo-openeew/\x1b[0m");
+        println!("\x1b[92m✓ Simulation complete!\x1b[0m");
+        println!("\n\x1b[2mTo analyze real OpenEEW earthquake data:\x1b[0m");
+        println!("  seismotail detect --country mx --date 2018-02-16 --hour 23");
 
-    } else {
-        // Real data mode
-        println!("\x1b[93m▶ OpenEEW Data Access\x1b[0m\n");
+    } else if let Some(date) = &args.date {
+        // Real data mode - fetch from OpenEEW S3
+        println!("\x1b[93m▶ Fetching real data from OpenEEW (AWS S3)...\x1b[0m\n");
         println!("  Country: {}", args.country);
-        
-        if let Some(date) = &args.date {
-            println!("  Date: {}", date);
-            println!("\n  \x1b[2mData URL pattern:\x1b[0m");
-            println!("  s3://grillo-openeew/records/country_code={}/year={}/month={}/day={}/",
-                args.country, &date[0..4], &date[5..7], &date[8..10]);
+        println!("  Date:    {}", date);
+        if let Some(hour) = &args.hour {
+            println!("  Hour:    {}:00 UTC", hour);
         }
-        
-        println!("\n\x1b[93m⚠ Real-time data requires AWS S3 access.\x1b[0m");
-        println!("  Use --demo flag to see detection in action:");
-        println!("  \x1b[96mseismotail detect --demo\x1b[0m");
+        println!("  Bucket:  s3://grillo-openeew/\n");
+
+        let rt = tokio::runtime::Runtime::new()
+            .context("failed to create tokio runtime")?;
+
+        rt.block_on(async {
+            let client = OpenEewClient::new().await;
+            let detector = StaLtaDetector::default();
+
+            println!("  \x1b[2mListing devices...\x1b[0m");
+            
+            match client.list_devices(&args.country).await {
+                Ok(devices) => {
+                    if devices.is_empty() {
+                        println!("  \x1b[91m✗ No devices found for country: {}\x1b[0m", args.country);
+                        return;
+                    }
+
+                    let device_limit = 5;
+                    let files_per_device = 12; // Cover full hour (5-min intervals)
+                    println!("  \x1b[92m✓ Found {} devices\x1b[0m", devices.len());
+                    println!("  Analyzing {} devices, {} files each...\n", device_limit, files_per_device);
+
+                    let mut all_detections = Vec::new();
+                    let mut records_processed = 0;
+                    let mut files_processed = 0;
+
+                    for device_id in devices.iter().take(device_limit) {
+                        print!("  Device {}... ", device_id);
+                        
+                        match client.list_files(&args.country, device_id, date, args.hour.as_deref()).await {
+                            Ok(files) => {
+                                if files.is_empty() {
+                                    println!("\x1b[2mno data\x1b[0m");
+                                    continue;
+                                }
+                                
+                                let mut device_records = 0;
+                                let mut max_pga: f32 = 0.0;
+                                for key in files.iter().take(files_per_device) {
+                                    match client.fetch_records(key).await {
+                                        Ok(records) => {
+                                            device_records += records.len();
+                                            records_processed += records.len();
+                                            files_processed += 1;
+                                            
+                                            for record in &records {
+                                                // Track max PGA seen
+                                                for i in 0..record.x.len().min(record.y.len()).min(record.z.len()) {
+                                                    let pga = eew::StaLtaDetector::calculate_pga(
+                                                        record.x[i], record.y[i], record.z[i]
+                                                    );
+                                                    if pga > max_pga { max_pga = pga; }
+                                                }
+                                                
+                                                let dets = detector.detect(record);
+                                                all_detections.extend(dets);
+                                            }
+                                        }
+                                        Err(_) => continue,
+                                    }
+                                }
+                                println!("\x1b[92m{} records, max PGA: {:.1} gals\x1b[0m", device_records, max_pga);
+                            }
+                            Err(_) => {
+                                println!("\x1b[2mskipped\x1b[0m");
+                            }
+                        }
+                    }
+
+                    println!("\n\x1b[2m───────────────────────────────────────\x1b[0m");
+                    println!("\x1b[1mResults:\x1b[0m");
+                    println!("  Files processed:   {}", files_processed);
+                    println!("  Records processed: {}", records_processed);
+                    println!("  Detections found:  {}\n", all_detections.len());
+
+                    print_detections(&all_detections);
+                }
+                Err(e) => {
+                    println!("  \x1b[91m✗ Error: {}\x1b[0m", e);
+                    println!("\n  \x1b[2mMake sure the date format is YYYY-MM-DD\x1b[0m");
+                }
+            }
+        });
+    } else {
+        println!("\x1b[93m▶ Usage:\x1b[0m\n");
+        println!("  # Run with synthetic waveform:");
+        println!("  \x1b[96mseismotail detect --simulate\x1b[0m\n");
+        println!("  # Analyze real OpenEEW earthquake data:");
+        println!("  \x1b[96mseismotail detect --country mx --date 2018-02-16 --hour 23\x1b[0m\n");
+        println!("\x1b[2mData: https://registry.opendata.aws/grillo-openeew/\x1b[0m");
     }
 
     Ok(())
