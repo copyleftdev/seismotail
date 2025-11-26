@@ -25,6 +25,9 @@ seismotail live
 
 # Web dashboard
 seismotail ui
+
+# EEW detection demo
+seismotail detect --demo
 ```
 
 ### Filtering
@@ -32,9 +35,25 @@ seismotail ui
 ```bash
 seismotail tail --min-magnitude 4.0
 seismotail tail --radius 37.77,-122.42,500
-seismotail tail --bbox 32,-125,42,-114
 seismotail tail --format json | jq '.'
 ```
+
+### EEW Detection (Experimental)
+
+```bash
+# Run STA/LTA earthquake detection on simulated data
+seismotail detect --demo
+
+# Output:
+# 🟠 EARTHQUAKE DETECTED!
+# ├─ PGA:       19.85 gals (cm/s²)
+# ├─ STA/LTA:   5.79
+# ├─ Alert:     MODERATE
+# └─ Est. Mag:  ~M3.8
+```
+
+Uses the industry-standard **STA/LTA algorithm** (Short-Term Average / Long-Term Average) 
+for P-wave detection — the same technique used by OpenEEW and professional seismic networks.
 
 ---
 
@@ -45,27 +64,15 @@ seismotail tail --format json | jq '.'
 | **Language** | Rust | Java | Java + CUDA | Node.js |
 | **Type** | CLI + Web | CLI | Desktop GUI | IoT Toolkit |
 | **Binary Size** | ~5 MB | JVM required | JVM required | N/A |
-| **Startup Time** | <100ms | ~2s | ~5s | N/A |
-| **Memory** | ~20 MB | ~200 MB | ~500 MB | N/A |
 | **Real-time** | ✅ SSE streaming | ✅ Polling | ✅ Polling | ✅ Sensors |
+| **EEW Detection** | ✅ STA/LTA | ❌ | ✅ | ✅ |
 | **Web UI** | ✅ Built-in | ❌ | ❌ | ✅ Dashboard |
 | **Pipe-friendly** | ✅ JSON/NDJSON | ❌ | ❌ | ❌ |
-| **Geo Filters** | ✅ bbox, radius | ✅ radius | ✅ | ❌ |
-| **Early Warning** | ❌ | ❌ | ✅ EEW | ✅ EEW |
 | **Hardware** | None | None | GPU optional | Sensors |
-| **Data Source** | USGS | USGS | Multiple | Grillo sensors |
-| **Status** | ✅ Active | 🔶 Dev | ❌ Discontinued | ✅ Active |
-
-### Why SeismoTail?
-
-- **Fast** — Single Rust binary, instant startup
-- **Pipe-friendly** — JSON/NDJSON output for Unix pipelines  
-- **Modern UI** — HTMX-powered web dashboard with dark mode
-- **Lightweight** — No JVM, no runtime dependencies
-- **Focused** — Does one thing well: consume USGS data
+| **Data Source** | USGS + OpenEEW | USGS | Multiple | Grillo sensors |
 
 ---
 
 ## License
 
-MIT — Data from [USGS](https://earthquake.usgs.gov/) (public domain)
+MIT — Data from [USGS](https://earthquake.usgs.gov/) and [OpenEEW](https://openeew.com/) (public domain)
